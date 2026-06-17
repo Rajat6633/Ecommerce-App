@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /d/MyDevWorkSpace/JS/ecommerce-platform/docs && echo created)"
+    ],
+    "additionalDirectories": [
+      "D:\\MyDevWorkSpace\\JS\\ecommerce-platform"
+    ]
+  }
+}
