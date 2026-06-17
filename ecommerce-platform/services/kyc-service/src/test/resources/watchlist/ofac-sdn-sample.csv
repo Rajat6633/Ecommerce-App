@@ -1,0 +1,5 @@
+"36","AEROCARIBBEAN AIRLINES","entity","CUBA","-0- ","-0- ","-0- ","-0- ","-0- ","-0- ","-0- ","Linked To: AVANGE."
+"173","ABDUL AZIZ, Abu","individual","SDGT","-0- ","-0- ","-0- ","-0- ","-0- ","-0- ","-0- ","DOB 1968; POB Lahore, Pakistan."
+"306","AL-NASSER, Khalid","individual","SDGT","-0- ","-0- ","-0- ","-0- ","-0- ","-0- ","-0- ","Nationality Syria."
+"500","GULF EXPORT, S.A.","entity","NPWMD","-0- ","-0- ","-0- ","-0- ","-0- ","-0- ","-0- ","Front company."
+"777","SEA SPIRIT","vessel","CUBA","-0- ","ABCD","Cargo","10,000","-0- ","Panama","GULF EXPORT, S.A.","Vessel only - should be filtered out."

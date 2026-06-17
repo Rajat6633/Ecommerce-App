@@ -1,0 +1,24 @@
+# Docker profile: compose DNS. Chat = local Ollama (llama3.2:3b) at the compose
+# 'ollama' service (override with OLLAMA_BASE_URL). Embeddings = real Transformers
+# (ONNX) + pgvector store — unchanged. No ANTHROPIC_API_KEY required.
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres:5432/kyc_db
+    username: ${POSTGRES_USER:ecommerce}
+    password: ${POSTGRES_PASSWORD:ecommerce}
+  kafka:
+    bootstrap-servers: kafka:29092
+  ai:
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://ollama:11434}
+      chat:
+        enabled: true        # Ollama is the single active ChatModel under 'docker'
+        options:
+          model: ${KYC_CHAT_MODEL:llama3.2:3b}
+    anthropic:
+      chat:
+        enabled: false       # keep Anthropic off so only ONE ChatModel exists
+management:
+  otlp:
+    tracing:
+      endpoint: http://otel-collector:4318/v1/traces

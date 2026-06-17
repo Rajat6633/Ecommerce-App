@@ -1,0 +1,38 @@
+# Secrets / local env
+**/.env
+*.env.local
+# Dev JWT keypair mounted by services/docker-compose.apps.yml
+infra/keys/
+
+# Build scratch logs
+.mvn-build*.log
+
+# Java / Maven
+target/
+*.class
+*.jar
+!**/.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+
+# Claude Code local-only settings (skills/ are committed)
+.claude/settings.local.json
+
+# Spring AI local model cache (transformers / HuggingFace downloads at runtime)
+**/.spring-ai/
+**/transformers-cache/
+**/.cache/huggingface/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Observability local data (if bind-mounted)
+infra/**/data/

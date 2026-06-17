@@ -1,0 +1,11 @@
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+RUN addgroup -S app && adduser -S app -G app
+ARG JAR_FILE
+COPY ${JAR_FILE} app.jar
+RUN chown app:app /app/app.jar
+USER app
+ARG PORT=8080
+EXPOSE ${PORT}
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -Djava.security.egd=file:/dev/./urandom"
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

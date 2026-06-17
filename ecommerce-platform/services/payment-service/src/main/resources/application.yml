@@ -1,0 +1,111 @@
+# ============================================================================
+#  payment-service — base configuration.
+# ============================================================================
+spring:
+  application:
+    name: payment-service
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    # Tracing (C5): producer/consumer observation injects+extracts the trace
+    # context into Kafka headers, so the saga correlates as ONE distributed
+    # trace. Auto-configured KafkaTemplate + listener container factory pick
+    # these up; no manual bean wiring needed.
+    template:
+      observation-enabled: true
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: ${SPRING_KAFKA_CONSUMER_GROUP_ID:payment-service}
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: record
+      observation-enabled: true
+
+server:
+  port: ${SERVER_PORT:8086}
+  shutdown: graceful
+
+# Simulated payment processor success rate (1.0 = always approve)
+payment:
+  success-rate: ${PAYMENT_SIMULATED_SUCCESS_RATE:0.9}
+
+auth:
+  jwt:
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION:classpath:keys/public.pem}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      kafka-publisher:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        # Local back-pressure must not count toward opening the circuit.
+        ignore-exceptions:
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+  retry:
+    instances:
+      kafka-publisher:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+  ratelimiter:
+    instances:
+      kafka-publisher:
+        limit-for-period: 100
+        limit-refresh-period: 1s
+        timeout-duration: 0
+  bulkhead:
+    instances:
+      kafka-publisher:
+        max-concurrent-calls: 20
+        max-wait-duration: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
+  metrics:
+    tags:
+      service: payment-service
+  tracing:
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

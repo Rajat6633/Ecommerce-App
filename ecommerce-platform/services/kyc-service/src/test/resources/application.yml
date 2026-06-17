@@ -1,0 +1,44 @@
+# Test defaults — datasource/kafka set per-IT via Testcontainers. Tests activate
+# the 'test' profile (@ActiveProfiles), which wires the stub ChatModel/
+# EmbeddingModel + SimpleVectorStore (AiConfig / VectorStoreConfig), so they
+# need no ANTHROPIC_API_KEY.
+kyc:
+  risk-threshold: 0.85
+  vendor:
+    enabled: false
+auth:
+  jwt:
+    public-key-location: classpath:keys/public.pem
+management:
+  tracing:
+    sampling:
+      probability: 0.0
+# This test application.yml shadows the main one on the classpath, so the Kafka
+# config must be restated here (only bootstrap-servers comes from the IT).
+spring:
+  # Belt-and-suspenders: keep BOTH vendor chat auto-configs off and the Ollama
+  # embedding off. The StubChatModel (AiConfig, @Profile test) is the only
+  # ChatModel bean and the StubEmbeddingModel the only EmbeddingModel — so the
+  # suite stays fully OFFLINE (no Ollama/Anthropic connection, no ONNX download).
+  ai:
+    ollama:
+      chat:
+        enabled: false
+      embedding:
+        enabled: false
+    anthropic:
+      chat:
+        enabled: false
+  kafka:
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: kyc-service-it
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      auto-offset-reset: earliest
+    listener:
+      ack-mode: record

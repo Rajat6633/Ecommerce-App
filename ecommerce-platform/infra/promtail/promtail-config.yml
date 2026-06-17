@@ -1,0 +1,63 @@
+# ============================================================================
+#  Promtail — discovers docker containers and ships their JSON logs to Loki.
+#  Our services log structured JSON (logback-spring.xml) to stdout, which
+#  Docker captures as the container log. We parse the JSON to promote
+#  service / level / traceId / correlationId into Loki labels & structured
+#  metadata so Grafana can pivot logs <-> traces.
+# ============================================================================
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+    relabel_configs:
+      # container name (strip leading slash)
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+      # compose project
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        target_label: compose_project
+      # compose service -> our "service" label
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: service
+      - source_labels: ["__meta_docker_container_log_stream"]
+        target_label: stream
+
+    pipeline_stages:
+      # Docker writes logs as JSON-lines: {"log":"<app line>","stream":"..","time":".."}
+      - docker: {}
+      # Our app lines are themselves JSON — parse the inner structure.
+      - json:
+          expressions:
+            level: level
+            logger: logger_name
+            app: service_name
+            traceId: traceId
+            spanId: spanId
+            correlationId: correlationId
+            message: message
+            ts: "@timestamp"
+      - labels:
+          level:
+          app:
+      # Promote trace correlation IDs as structured metadata (not labels -> low cardinality)
+      - structured_metadata:
+          traceId:
+          spanId:
+          correlationId:
+      - timestamp:
+          source: ts
+          format: RFC3339Nano
+          fallback_formats:
+            - UnixMs

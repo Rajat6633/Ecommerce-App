@@ -1,0 +1,43 @@
+# ============================================================================
+#  storefront — Deployment + Service
+#  Static React SPA served by nginx on port 8080. Exposed as ClusterIP :80.
+#  Routed via the frontend-ingress (ecommerce.local catch-all /).
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront
+  namespace: ecommerce
+  labels: { app: storefront }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: storefront } }
+  template:
+    metadata:
+      labels: { app: storefront }
+    spec:
+      containers:
+        - name: storefront
+          image: ecommerce/storefront:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          startupProbe:
+            httpGet: { path: /health, port: 8080 }
+            failureThreshold: 10
+            periodSeconds: 3
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: storefront, namespace: ecommerce, labels: { app: storefront } }
+spec:
+  selector: { app: storefront }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]

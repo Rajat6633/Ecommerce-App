@@ -1,0 +1,11 @@
+# Test defaults — datasource set per-IT via Testcontainers; product call mocked.
+product:
+  service:
+    url: http://localhost:0
+auth:
+  jwt:
+    public-key-location: classpath:keys/public.pem
+management:
+  tracing:
+    sampling:
+      probability: 0.0

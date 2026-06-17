@@ -1,0 +1,23 @@
+# K8s profile: env from ConfigMap/Secret. Support chatbot (D4) chat = local
+# Ollama (llama3.2:3b) via the in-cluster 'ollama' Service (override with
+# OLLAMA_BASE_URL from ConfigMap).
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+  ai:
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://ollama:11434}
+      chat:
+        enabled: true        # Ollama is the single active ChatModel under 'k8s'
+        options:
+          model: ${ORDER_CHAT_MODEL:llama3.2:3b}
+    anthropic:
+      chat:
+        enabled: false       # keep Anthropic off so only ONE ChatModel exists
+cart:
+  service:
+    url: ${CART_SERVICE_URL:http://cart-service:8084}

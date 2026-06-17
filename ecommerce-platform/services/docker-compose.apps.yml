@@ -1,0 +1,147 @@
+# ============================================================================
+#  E-Commerce Platform — Application Microservices (docker compose)
+#  ---------------------------------------------------------------------------
+#  Prereqs:
+#    1. Infrastructure up first:  cd infra && cp .env.example .env && docker compose up -d
+#       (creates the shared `ecommerce-net` network, Postgres, Kafka, observability)
+#    2. Shared RS256 JWT keypair (signed by auth, verified by all others):
+#         mkdir -p infra/keys
+#         openssl genrsa -out infra/keys/private.pem 2048
+#         openssl rsa -in infra/keys/private.pem -pubout -out infra/keys/public.pem
+#       infra/keys/ is dev-only — never commit real keys.
+#  Run:   docker compose -f services/docker-compose.apps.yml up -d --build
+#         (from the repository root)
+#  Stop:  docker compose -f services/docker-compose.apps.yml down
+#  ---------------------------------------------------------------------------
+#  Each image is built from the repo root (Dockerfiles copy shared/ modules).
+#  Services join the external `ecommerce-net` network created by infra compose.
+#  Container healthchecks come from each Dockerfile (actuator liveness).
+# ============================================================================
+
+name: ecommerce-apps
+
+networks:
+  ecommerce-net:
+    external: true
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks: [ecommerce-net]
+  # Cap container memory so 7 JVMs can't OOM the Docker VM; with
+  # MaxRAMPercentage=75 (Dockerfile JAVA_OPTS) each JVM heap tops out ~384m.
+  mem_limit: 512m
+  environment: &service-env
+    SPRING_PROFILES_ACTIVE: docker
+    POSTGRES_USER: ${POSTGRES_USER:-ecommerce}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce}
+    # Verify tokens with the shared dev keypair (matches auth-service signing key)
+    JWT_PUBLIC_KEY_LOCATION: file:/keys/public.pem
+  volumes:
+    - ../infra/keys:/keys:ro
+
+volumes:
+  # Persists pulled Ollama models so llama3.2:3b is downloaded once.
+  ollama-models:
+
+services:
+
+  # Local LLM for kyc-service chat/vision (A3). The 'docker' profile resolves the
+  # ChatModel against http://ollama:11434. Pull the model once after first start:
+  #   docker compose -f services/docker-compose.apps.yml exec ollama ollama pull llama3.2:3b
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    networks: [ecommerce-net]
+    ports: ["11434:11434"]
+    volumes:
+      - ollama-models:/root/.ollama
+    # GPU is optional; this runs CPU-only by default (llama3.2:3b is small enough).
+
+  auth-service:
+    <<: *service-defaults
+    image: ecommerce/auth-service:latest
+    build: { context: .., dockerfile: services/auth-service/Dockerfile }
+    container_name: auth-service
+    ports: ["8081:8081"]
+    environment:
+      <<: *service-env
+      JWT_PRIVATE_KEY_LOCATION: file:/keys/private.pem
+
+  product-service:
+    <<: *service-defaults
+    image: ecommerce/product-service:latest
+    build: { context: .., dockerfile: services/product-service/Dockerfile }
+    container_name: product-service
+    ports: ["8082:8082"]
+
+  inventory-service:
+    <<: *service-defaults
+    image: ecommerce/inventory-service:latest
+    build: { context: .., dockerfile: services/inventory-service/Dockerfile }
+    container_name: inventory-service
+    ports: ["8083:8083"]
+
+  cart-service:
+    <<: *service-defaults
+    image: ecommerce/cart-service:latest
+    build: { context: .., dockerfile: services/cart-service/Dockerfile }
+    container_name: cart-service
+    ports: ["8084:8084"]
+
+  order-service:
+    <<: *service-defaults
+    image: ecommerce/order-service:latest
+    build: { context: .., dockerfile: services/order-service/Dockerfile }
+    container_name: order-service
+    ports: ["8085:8085"]
+
+  payment-service:
+    <<: *service-defaults
+    image: ecommerce/payment-service:latest
+    build: { context: .., dockerfile: services/payment-service/Dockerfile }
+    container_name: payment-service
+    ports: ["8086:8086"]
+    environment:
+      <<: *service-env
+      PAYMENT_SIMULATED_SUCCESS_RATE: ${PAYMENT_SIMULATED_SUCCESS_RATE:-0.9}
+
+  notification-service:
+    <<: *service-defaults
+    image: ecommerce/notification-service:latest
+    build: { context: .., dockerfile: services/notification-service/Dockerfile }
+    container_name: notification-service
+    ports: ["8087:8087"]
+    environment:
+      <<: *service-env
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+
+  kyc-service:
+    <<: *service-defaults
+    image: ecommerce/kyc-service:latest
+    build: { context: .., dockerfile: services/kyc-service/Dockerfile }
+    container_name: kyc-service
+    ports: ["8088:8088"]
+    # Override the shared 512m cap: kyc loads an in-pod ONNX embedding model
+    # (all-MiniLM-L6-v2 via spring-ai-transformers) on top of the JVM heap,
+    # so it needs more headroom than the other JVM-only services.
+    mem_limit: 1g
+    # NOTE on egress: the spring-ai-transformers starter downloads the
+    # all-MiniLM-L6-v2 embedding model (~90MB) from HuggingFace on first boot,
+    # so this container needs outbound internet on first run (cached after).
+    # The Spring AI 1.0.0-M1 BOM/starters also resolve from repo.spring.io at
+    # *build* time (parent pom's spring-milestones repo) — see the Dockerfile.
+    depends_on:
+      - ollama
+    environment:
+      <<: *service-env
+      # Chat/vision under the 'docker' profile = local Ollama (no API key needed).
+      # The KYC screening path (Transformers embeddings + pgvector) also needs no
+      # key. Pull the model once (see the ollama service note above) before the
+      # document-extraction / risk-narrative paths will produce real output;
+      # until then those paths fail closed (low-confidence / deterministic fallback).
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      KYC_CHAT_MODEL: ${KYC_CHAT_MODEL:-llama3.2:3b}

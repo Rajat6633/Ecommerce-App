@@ -1,0 +1,12 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres:5432/cart_db
+    username: ${POSTGRES_USER:ecommerce}
+    password: ${POSTGRES_PASSWORD:ecommerce}
+product:
+  service:
+    url: http://product-service:8082
+management:
+  otlp:
+    tracing:
+      endpoint: http://otel-collector:4318/v1/traces

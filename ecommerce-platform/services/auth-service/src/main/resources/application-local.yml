@@ -1,0 +1,8 @@
+# Local profile — run against docker-compose infra on localhost.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/auth_db
+    username: ecommerce
+    password: ecommerce
+  kafka:
+    bootstrap-servers: localhost:9092

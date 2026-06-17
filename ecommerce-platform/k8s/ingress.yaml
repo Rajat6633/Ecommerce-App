@@ -1,0 +1,205 @@
+# ============================================================================
+#  API Gateway — Kubernetes NGINX Ingress Controller (the edge / north-south
+#  entrypoint). Replaces Spring Cloud Gateway: routing, TLS termination, rate
+#  limiting, CORS and security headers are all handled here at L7. There is NO
+#  api-gateway Spring service — the Ingress Controller IS the gateway.
+#
+#  JWT validation is NOT done at the edge: every backend is an RS256 OAuth2
+#  resource server that validates the token itself (defense-in-depth / zero
+#  trust). See docs/05-api-gateway-design.md for the optional external-auth
+#  (auth-url) alternative.
+#
+#  Routing is path-based; controllers already live under /api/<ctx>, so no
+#  rewrite is applied — the original path is forwarded unchanged.
+#
+#  Prereqs:
+#    minikube addons enable ingress
+#    # TLS secret (dev self-signed) — see docs/05 §TLS, or deploy.sh creates it:
+#    kubectl -n ecommerce create secret tls ecommerce-tls \
+#      --cert=tls.crt --key=tls.key
+#    # hosts file -> minikube ip (or 127.0.0.1 with `minikube tunnel`):
+#    <minikube-ip>  ecommerce.local grafana.local prometheus.local
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+#  Business APIs. One Ingress so a single annotation set (rate limit, CORS,
+#  body size, timeouts) applies uniformly to all product/order/etc. paths.
+# ----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ecommerce-api-ingress
+  namespace: ecommerce
+  annotations:
+    # --- TLS ---
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # --- Request limits / timeouts ---
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "5"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    # --- Rate limiting (per client IP; burst = limit-rps * burst-multiplier) ---
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "2"
+    # --- CORS (centralized at the edge) ---
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://ecommerce.local, https://admin.ecommerce.local"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type, X-Correlation-Id"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+    nginx.ingress.kubernetes.io/cors-max-age: "600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [ecommerce.local]
+      secretName: ecommerce-tls
+  rules:
+    - host: ecommerce.local
+      http:
+        paths:
+          - path: /api/products
+            pathType: Prefix
+            backend:
+              service: { name: product-service, port: { number: 8082 } }
+          - path: /api/categories
+            pathType: Prefix
+            backend:
+              service: { name: product-service, port: { number: 8082 } }
+          - path: /api/inventory
+            pathType: Prefix
+            backend:
+              service: { name: inventory-service, port: { number: 8083 } }
+          - path: /api/cart
+            pathType: Prefix
+            backend:
+              service: { name: cart-service, port: { number: 8084 } }
+          - path: /api/orders
+            pathType: Prefix
+            backend:
+              service: { name: order-service, port: { number: 8085 } }
+          - path: /api/payments
+            pathType: Prefix
+            backend:
+              service: { name: payment-service, port: { number: 8086 } }
+          - path: /api/notifications
+            pathType: Prefix
+            backend:
+              service: { name: notification-service, port: { number: 8087 } }
+---
+# ----------------------------------------------------------------------------
+#  Auth endpoints. A separate Ingress so login/refresh get a STRICTER rate
+#  limit (credential-stuffing / brute-force protection) than the rest of the
+#  API — per-path policy is expressed as separate Ingress objects in NGINX.
+# ----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ecommerce-auth-ingress
+  namespace: ecommerce
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    # Tighter: auth is low-volume + a brute-force target.
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+    nginx.ingress.kubernetes.io/limit-connections: "10"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "2"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://ecommerce.local, https://admin.ecommerce.local"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type, X-Correlation-Id"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [ecommerce.local]
+      secretName: ecommerce-tls
+  rules:
+    - host: ecommerce.local
+      http:
+        paths:
+          - path: /api/auth
+            pathType: Prefix
+            backend:
+              service: { name: auth-service, port: { number: 8081 } }
+---
+# ----------------------------------------------------------------------------
+#  Observability UIs on separate hostnames. NOTE: protect these in any shared
+#  environment — uncomment the basic-auth annotations (secret `obs-basic-auth`)
+#  or front with the auth proxy. Left open for local Minikube convenience.
+# ----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: observability-ingress
+  namespace: ecommerce
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # nginx.ingress.kubernetes.io/auth-type: basic
+    # nginx.ingress.kubernetes.io/auth-secret: obs-basic-auth
+    # nginx.ingress.kubernetes.io/auth-realm: "Observability - Authentication Required"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: grafana.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: grafana, port: { number: 3000 } }
+    - host: prometheus.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: prometheus, port: { number: 9090 } }
+---
+# ----------------------------------------------------------------------------
+#  Frontend SPAs. Separate Ingress so frontend catch-all (/) does not
+#  interfere with the tighter annotations on API and auth ingresses above.
+#
+#  Routing priority in NGINX Ingress: longer/more-specific paths win, so
+#  /api/* in ecommerce-api-ingress and /api/auth in ecommerce-auth-ingress
+#  always take precedence over the catch-all / defined here.
+#
+#  hosts file additions required for local dev:
+#    <minikube-ip>  ecommerce.local admin.ecommerce.local grafana.local prometheus.local
+# ----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ecommerce-frontend-ingress
+  namespace: ecommerce
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    # Static assets — let nginx cache headers through
+    nginx.ingress.kubernetes.io/proxy-buffering: "on"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [ecommerce.local, admin.ecommerce.local]
+      secretName: ecommerce-tls
+  rules:
+    # Storefront — customer-facing SPA (catch-all on the primary domain)
+    - host: ecommerce.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: storefront, port: { number: 80 } }
+    # Admin console — internal SPA on its own subdomain
+    - host: admin.ecommerce.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: admin, port: { number: 80 } }

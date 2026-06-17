@@ -1,0 +1,303 @@
+# ============================================================================
+#  E-Commerce Platform — Local Infrastructure & Observability Stack
+#  Run:  docker compose up -d
+#  Stop: docker compose down         (add -v to wipe volumes)
+# ----------------------------------------------------------------------------
+#  This compose file provisions the *platform* dependencies:
+#    - PostgreSQL (one instance, one DB per microservice)
+#    - Kafka + Zookeeper
+#    - Redis (gateway rate limiting)
+#    - Observability: Prometheus, Grafana, Loki, Promtail, Tempo, OTel Collector
+#  The application microservices are added in services/docker-compose.apps.yml
+#  (delivered from Phase 4 onward) and join the same `ecommerce-net` network.
+# ============================================================================
+
+name: ecommerce-infra
+
+networks:
+  ecommerce-net:
+    name: ecommerce-net
+    driver: bridge
+
+volumes:
+  postgres-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-log:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  tempo-data:
+  redis-data:
+
+services:
+
+  # ------------------------------------------------------------------ #
+  #  PostgreSQL — single instance, multiple databases                  #
+  # ------------------------------------------------------------------ #
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ecommerce}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce}
+      # Comma-separated list consumed by init-multiple-dbs.sh
+      POSTGRES_MULTIPLE_DATABASES: auth_db,product_db,inventory_db,cart_db,order_db,payment_db,notification_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ecommerce}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [ecommerce-net]
+
+  # ------------------------------------------------------------------ #
+  #  Zookeeper + Kafka                                                  #
+  # ------------------------------------------------------------------ #
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      # `ruok` is not in cp-zookeeper's 4lw whitelist — use `srvr` instead
+      # (a `ruok`-based check reports unhealthy forever and blocks kafka).
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 | grep -q Zookeeper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [ecommerce-net]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"    # external listener (host -> kafka)
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Two listeners: INTERNAL for in-network services, EXTERNAL for host
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 6
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+    networks: [ecommerce-net]
+
+  # One-shot job that creates all business topics with explicit partitions.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        B=kafka:29092
+        create() { kafka-topics --bootstrap-server $$B --create --if-not-exists --topic "$$1" --partitions "$${2:-6}" --replication-factor 1; }
+        create order.created
+        create inventory.reserved
+        create inventory.reservation-failed
+        create inventory.released
+        create payment.completed
+        create payment.failed
+        create order.confirmed
+        # KYC / compliance saga (Phase 14): user.registered is emitted by
+        # auth-service; kyc.approved / kyc.rejected are produced by kyc-service.
+        create user.registered
+        create kyc.approved
+        create kyc.rejected
+        # Dead-letter topics (single partition, used by Spring Kafka) — one per consumed topic
+        create order.created.DLT 1
+        create inventory.reserved.DLT 1
+        create inventory.reservation-failed.DLT 1
+        create inventory.released.DLT 1
+        create payment.completed.DLT 1
+        create payment.failed.DLT 1
+        create order.confirmed.DLT 1
+        create user.registered.DLT 1
+        create kyc.approved.DLT 1
+        create kyc.rejected.DLT 1
+        echo "==> Topics created:"
+        kafka-topics --bootstrap-server $$B --list
+    networks: [ecommerce-net]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    networks: [ecommerce-net]
+
+  # ------------------------------------------------------------------ #
+  #  Redis — product-service cache (gateway rate limiting now lives in  #
+  #  the NGINX Ingress and needs no Redis)                              #
+  # ------------------------------------------------------------------ #
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [ecommerce-net]
+
+  # ------------------------------------------------------------------ #
+  #  OpenTelemetry Collector — receives OTLP, exports to Tempo + Prom  #
+  # ------------------------------------------------------------------ #
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.1
+    container_name: otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel/otel-collector-config.yml"]
+    volumes:
+      - ./otel/otel-collector-config.yml:/etc/otel/otel-collector-config.yml:ro
+    ports:
+      - "4317:4317"    # OTLP gRPC  (services -> collector)
+      - "4318:4318"    # OTLP HTTP
+      - "8889:8889"    # Prometheus exporter (collector's own + span metrics)
+    depends_on:
+      tempo:
+        condition: service_started
+    networks: [ecommerce-net]
+
+  # ------------------------------------------------------------------ #
+  #  Tempo — distributed tracing backend                              #
+  # ------------------------------------------------------------------ #
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"    # Tempo query API (Grafana datasource)
+    networks: [ecommerce-net]
+
+  # ------------------------------------------------------------------ #
+  #  Loki — log aggregation                                            #
+  # ------------------------------------------------------------------ #
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [ecommerce-net]
+
+  # ------------------------------------------------------------------ #
+  #  Promtail — ships container logs to Loki                          #
+  # ------------------------------------------------------------------ #
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_started
+    networks: [ecommerce-net]
+
+  # ------------------------------------------------------------------ #
+  #  Prometheus — metrics scraping                                     #
+  # ------------------------------------------------------------------ #
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver"   # accept Tempo span-metrics remote_write
+      - "--enable-feature=exemplar-storage"     # trace exemplars on histograms
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [ecommerce-net]
+
+  # ------------------------------------------------------------------ #
+  #  Grafana — dashboards (Prometheus + Loki + Tempo datasources)     #
+  # ------------------------------------------------------------------ #
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Enable trace-to-logs / logs-to-trace correlation
+      GF_FEATURE_TOGGLES_ENABLE: traceToMetrics
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    networks: [ecommerce-net]

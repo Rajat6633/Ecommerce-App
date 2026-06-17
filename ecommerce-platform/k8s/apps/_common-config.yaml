@@ -1,0 +1,24 @@
+# ============================================================================
+#  Shared application config — injected into every microservice via envFrom.
+#  Service-specific values (DB name, port) live in each service's own ConfigMap.
+#  Discovery is pure Kubernetes DNS: kafka, postgres, otel-collector resolve
+#  within the `ecommerce` namespace — NO Eureka/Config Server.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-common-config
+  namespace: ecommerce
+data:
+  SPRING_PROFILES_ACTIVE: "k8s"
+  # --- Kafka (K8s DNS) ---
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  # --- Tracing -> OTel Collector (K8s DNS) ---
+  MANAGEMENT_OTLP_TRACING_ENDPOINT: "http://otel-collector:4318/v1/traces"
+  MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  # --- Actuator / Prometheus scrape contract ---
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,prometheus,metrics"
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+  # --- JWT public key location (mounted from jwt-keys secret) ---
+  JWT_PUBLIC_KEY_LOCATION: "file:/etc/jwt/public.pem"

@@ -1,0 +1,66 @@
+# ============================================================================
+#  cart-service — Deployment + Service + ConfigMap. Owns cart_db.
+#  Calls product-service via OpenFeign (K8s DNS: http://product-service:8082).
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: cart-service-config, namespace: ecommerce }
+data:
+  SERVER_PORT: "8084"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/cart_db"
+  PRODUCT_SERVICE_URL: "http://product-service:8082"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cart-service
+  namespace: ecommerce
+  labels: { app: cart-service }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: cart-service } }
+  template:
+    metadata:
+      labels: { app: cart-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8084"
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000 }
+      containers:
+        - name: cart-service
+          image: ecommerce/cart-service:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8084 }]
+          envFrom:
+            - configMapRef: { name: app-common-config }
+            - configMapRef: { name: cart-service-config }
+          env:
+            - { name: SPRING_DATASOURCE_USERNAME, valueFrom: { secretKeyRef: { name: postgres-credentials, key: POSTGRES_USER } } }
+            - { name: SPRING_DATASOURCE_PASSWORD, valueFrom: { secretKeyRef: { name: postgres-credentials, key: POSTGRES_PASSWORD } } }
+          volumeMounts:
+            - { name: jwt-keys, mountPath: /etc/jwt, readOnly: true }
+          startupProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8084 }
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8084 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8084 }
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "200m", memory: "384Mi" }
+            limits:   { cpu: "1",    memory: "768Mi" }
+      volumes:
+        - name: jwt-keys
+          secret: { secretName: jwt-keys }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: cart-service, namespace: ecommerce, labels: { app: cart-service } }
+spec:
+  selector: { app: cart-service }
+  ports: [{ name: http, port: 8084, targetPort: 8084 }]

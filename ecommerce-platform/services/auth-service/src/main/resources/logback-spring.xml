@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Structured logging:
+   - local profile        -> human-readable console pattern
+   - all other profiles   -> JSON (Logstash encoder) to stdout for Promtail/Loki
+  MDC carries traceId / spanId (Micrometer Tracing) and correlationId, which
+  the JSON encoder emits as top-level fields for log<->trace correlation.
+-->
+<configuration>
+    <springProperty name="appName" source="spring.application.name" defaultValue="auth-service"/>
+
+    <!-- JSON appender for docker/k8s -->
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdc>true</includeMdc>
+            <customFields>{"service_name":"${appName}"}</customFields>
+            <fieldNames>
+                <timestamp>@timestamp</timestamp>
+                <logger>logger_name</logger>
+                <thread>thread_name</thread>
+            </fieldNames>
+        </encoder>
+    </appender>
+
+    <!-- Pretty console for local development -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <springProfile name="local">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!local">
+        <root level="INFO">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+</configuration>

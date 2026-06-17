@@ -1,0 +1,11 @@
+{
+  "eventId" : "99999999-9999-9999-9999-999999999999",
+  "eventType" : "kyc.approved",
+  "version" : 1,
+  "occurredAt" : "2026-06-15T10:15:30Z",
+  "traceId" : "0af7651916cd43dd8448eb211c80319c",
+  "correlationId" : "b7ad6b7169203331",
+  "payload" : {
+    "userId" : "11111111-1111-1111-1111-111111111111"
+  }
+}

@@ -1,0 +1,27 @@
+# Test defaults — datasource/kafka set per-IT via Testcontainers.
+notification:
+  mail:
+    enabled: false   # use the simulated (logging) sender in tests
+auth:
+  jwt:
+    public-key-location: classpath:keys/public.pem
+management:
+  tracing:
+    sampling:
+      probability: 0.0
+# This test application.yml shadows the main one on the classpath, so the Kafka
+# config must be restated here (only bootstrap-servers comes from the IT).
+spring:
+  kafka:
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: notification-service-it
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      auto-offset-reset: earliest
+    listener:
+      ack-mode: record

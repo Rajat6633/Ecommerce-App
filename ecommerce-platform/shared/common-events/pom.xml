@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.ecommerce</groupId>
+        <artifactId>ecommerce-platform-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>common-events</artifactId>
+    <name>common-events</name>
+    <description>Shared Kafka event envelope, topic names, and event payloads</description>
+
+    <!-- Production scope is intentionally dependency-free: pure contract records,
+         no framework coupling. Test scope adds JUnit 5 + Jackson ONLY (versions
+         from the Spring Boot BOM) to power the C6 event-contract tests: lightweight
+         serialization round-trips, no Kafka/Docker, no Spring Cloud Contract. -->
+    <dependencies>
+        <!-- Jackson: the same databind + JSR-310 (Instant) modules the services'
+             runtime ObjectMapper uses, so the contract matches the wire format. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JUnit 5 (Jupiter) -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,13 @@
+# Kubernetes profile — datasource URL/credentials + key locations + tracing
+# endpoint are injected via ConfigMap/Secret env vars (relaxed binding).
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+auth:
+  jwt:
+    private-key-location: ${JWT_PRIVATE_KEY_LOCATION}
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION}

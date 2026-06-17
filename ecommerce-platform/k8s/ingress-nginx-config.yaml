@@ -1,0 +1,54 @@
+# ============================================================================
+#  NGINX Ingress Controller — global hardening config.
+#  ---------------------------------------------------------------------------
+#  These objects live in the CONTROLLER's namespace (`ingress-nginx`, created by
+#  `minikube addons enable ingress`), NOT in `ecommerce`. They apply platform-
+#  wide to every Ingress the controller serves.
+#
+#  Apply AFTER enabling the ingress addon:
+#    kubectl apply -f k8s/ingress-nginx-config.yaml
+#    kubectl -n ingress-nginx rollout restart deployment ingress-nginx-controller
+#
+#  NOTE: `kubectl apply` sets the controller ConfigMap's `data` wholesale. On a
+#  fresh Minikube addon this map is empty, so this is safe. If you have other
+#  controller tuning, merge it here rather than letting it be overwritten.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/part-of: ingress-nginx
+data:
+  # --- TLS posture ---
+  ssl-protocols: "TLSv1.2 TLSv1.3"
+  ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+  hsts: "true"
+  hsts-max-age: "31536000"
+  hsts-include-subdomains: "true"
+  # --- Client / proxy ---
+  use-forwarded-headers: "true"
+  enable-real-ip: "true"
+  proxy-body-size: "10m"
+  # --- Hide implementation details ---
+  server-tokens: "false"
+  # --- Default security headers added to every response ---
+  add-headers: "ingress-nginx/custom-response-headers"
+  # --- Keep snippet annotations OFF (CVE surface); we rely on typed annotations ---
+  allow-snippet-annotations: "false"
+---
+# Custom response headers referenced by `add-headers` above. Applied to all
+# responses the controller returns.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-response-headers
+  namespace: ingress-nginx
+data:
+  X-Frame-Options: "DENY"
+  X-Content-Type-Options: "nosniff"
+  Referrer-Policy: "strict-origin-when-cross-origin"
+  X-XSS-Protection: "1; mode=block"
+  Permissions-Policy: "geolocation=(), microphone=(), camera=()"

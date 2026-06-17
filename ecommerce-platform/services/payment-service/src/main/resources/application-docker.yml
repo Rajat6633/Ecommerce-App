@@ -1,0 +1,11 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres:5432/payment_db
+    username: ${POSTGRES_USER:ecommerce}
+    password: ${POSTGRES_PASSWORD:ecommerce}
+  kafka:
+    bootstrap-servers: kafka:29092
+management:
+  otlp:
+    tracing:
+      endpoint: http://otel-collector:4318/v1/traces

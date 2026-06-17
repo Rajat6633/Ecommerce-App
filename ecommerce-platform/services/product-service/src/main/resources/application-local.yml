@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/product_db
+    username: ecommerce
+    password: ecommerce
+management:
+  health:
+    redis:
+      enabled: false   # no Redis required locally (cache.type=simple)

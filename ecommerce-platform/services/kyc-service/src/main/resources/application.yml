@@ -1,0 +1,233 @@
+# ============================================================================
+#  kyc-service — base config. Consumes user.registered; produces kyc.approved/
+#  kyc.rejected. Observe-only (gates nothing until Phase 14b).
+# ============================================================================
+spring:
+  application:
+    name: kyc-service
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+  servlet:
+    multipart:
+      max-file-size: 8MB
+      max-request-size: 8MB
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    # Tracing (C5): producer/consumer observation injects+extracts the trace
+    # context into Kafka headers, so the saga (auth→kyc→order→...) correlates as
+    # ONE distributed trace. Auto-configured KafkaTemplate + listener container
+    # factory pick these up; no manual bean wiring needed.
+    template:
+      observation-enabled: true
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: ${SPRING_KAFKA_CONSUMER_GROUP_ID:kyc-service}
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: record
+      observation-enabled: true
+  # Spring AI chat model selection — exactly ONE vendor per profile.
+  #
+  # Both the Ollama and Anthropic starters are on the classpath. Each vendor's
+  # auto-configured ChatModel is gated by spring.ai.<vendor>.chat.enabled
+  # (default true) + @ConditionalOnMissingBean. To make the active ChatModel
+  # deterministic we default BOTH chat auto-configs OFF here and re-enable
+  # exactly one per profile:
+  #   local / docker / k8s -> Ollama       (application-{local,docker,k8s}.yml)
+  #   cloud                -> Anthropic     (application-cloud.yml)
+  #   test                 -> neither; the StubChatModel (AiConfig) is the only bean.
+  # The Ollama embedding auto-config is disabled everywhere so embeddings stay
+  # Transformers/stub only (Ollama never adds a competing EmbeddingModel).
+  ai:
+    ollama:
+      # Connection only; the chat model is enabled per profile below. Embedding
+      # auto-config stays off platform-wide.
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        enabled: false
+        options:
+          model: ${KYC_CHAT_MODEL:llama3.2:3b}
+      embedding:
+        enabled: false
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      chat:
+        enabled: false
+        options:
+          model: ${KYC_ANTHROPIC_CHAT_MODEL:claude-opus-4-8}
+    embedding:
+      transformers:
+        # local ONNX embeddings — no external embeddings API (Anthropic has none)
+        cache:
+          enabled: true
+    vectorstore:
+      pgvector:
+        initialize-schema: false   # Flyway owns the schema (V1__init.sql)
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        dimensions: 384
+
+server:
+  port: ${SERVER_PORT:8088}
+  shutdown: graceful
+
+kyc:
+  # Embedding-similarity cut-off above which a screening match becomes a hit.
+  risk-threshold: ${KYC_RISK_THRESHOLD:0.85}
+  # Observe-only until Phase 14b wires order-service.
+  gating-enabled: ${KYC_GATING_ENABLED:false}
+  watchlist:
+    ingestion:
+      # Master switch. Default false so local/test and no-network envs keep using
+      # the fixture WatchlistSeeder; ops enable it where the OFAC feed is reachable.
+      enabled: ${KYC_WATCHLIST_INGESTION_ENABLED:false}
+      # OFAC SDN primary feed (CSV) + alternate-names (aliases) feed.
+      feed-url: ${KYC_WATCHLIST_FEED_URL:https://www.treasury.gov/ofac/downloads/sdn.csv}
+      alt-names-url: ${KYC_WATCHLIST_ALT_NAMES_URL:https://www.treasury.gov/ofac/downloads/alt.csv}
+      # Daily at 03:00 by default.
+      refresh-cron: ${KYC_WATCHLIST_REFRESH_CRON:0 0 3 * * *}
+      # Safety cap on rows ingested per run (0 = unlimited; blank/0 -> 50000 default).
+      max-entries: ${KYC_WATCHLIST_MAX_ENTRIES:50000}
+      # Hard cap on bytes read from a feed response (OOM / decompression-bomb guard); 50MB default.
+      max-response-bytes: ${KYC_WATCHLIST_MAX_RESPONSE_BYTES:52428800}
+      # SSRF allow-list of permitted feed hosts (https-only, public unicast enforced regardless).
+      allowed-hosts: ${KYC_WATCHLIST_ALLOWED_HOSTS:www.treasury.gov}
+  embedding:
+    provider: ${KYC_EMBEDDING_PROVIDER:transformers}
+  vendor:
+    enabled: ${KYC_VENDOR_ENABLED:false}
+    url: ${KYC_VENDOR_URL:http://identity-vendor}
+  upload:
+    rate-limit:
+      # Per-user cap on ID-document uploads (roadmap C3). Keyed per userId via a
+      # Resilience4j RateLimiterRegistry — independent of the service-wide kyc-ai
+      # limiter. Over-budget uploads are rejected with HTTP 429.
+      per-user-per-minute: ${KYC_UPLOAD_RATE_LIMIT_PER_USER_PER_MINUTE:5}
+
+auth:
+  jwt:
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION:classpath:keys/public.pem}
+    # Expected token issuer; must match what auth-service mints (auth.jwt.issuer).
+    issuer: ${JWT_ISSUER:auth-service}
+    # Expected token audience; must match what auth-service mints (auth.jwt.audience).
+    audience: ${JWT_AUDIENCE:ecommerce-services}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      kyc-ai:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 15s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        ignore-exceptions:
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+      identity-vendor:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        ignore-exceptions:
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+      kafka-publisher:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        ignore-exceptions:
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+  retry:
+    instances:
+      kyc-ai:
+        max-attempts: 2
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+      identity-vendor:
+        max-attempts: 3
+        wait-duration: 300ms
+        retry-exceptions:
+          - feign.FeignException
+          - java.io.IOException
+      kafka-publisher:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+  # LLM latency/cost make the rate limiter + bulkhead load-bearing here.
+  ratelimiter:
+    instances:
+      kyc-ai:
+        limit-for-period: 20
+        limit-refresh-period: 1s
+        timeout-duration: 0
+        register-health-indicator: true
+      identity-vendor:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 0
+      kafka-publisher:
+        limit-for-period: 100
+        limit-refresh-period: 1s
+        timeout-duration: 0
+  bulkhead:
+    instances:
+      kyc-ai:
+        max-concurrent-calls: 8
+        max-wait-duration: 0
+      identity-vendor:
+        max-concurrent-calls: 20
+        max-wait-duration: 0
+      kafka-publisher:
+        max-concurrent-calls: 20
+        max-wait-duration: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
+  metrics:
+    tags:
+      service: kyc-service
+  tracing:
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

@@ -1,0 +1,46 @@
+# Test defaults — datasource/kafka set per-IT via Testcontainers; cart call mocked.
+# KYC gating off here so the saga IT exercises checkout without a seeded read-model;
+# gating + fail-closed behaviour is covered by the OrderService unit tests.
+order:
+  kyc:
+    gating:
+      enabled: false
+cart:
+  service:
+    url: http://localhost:0
+auth:
+  jwt:
+    public-key-location: classpath:keys/public.pem
+management:
+  tracing:
+    sampling:
+      probability: 0.0
+# This test application.yml shadows the main one on the classpath, so the Kafka
+# config must be restated here (only bootstrap-servers comes from the IT).
+spring:
+  # Belt-and-suspenders: keep BOTH vendor chat auto-configs off (and Ollama
+  # embedding off). The StubChatModel (AiConfig, @Profile test) is the only
+  # ChatModel bean, so the suite stays fully OFFLINE — no Ollama/Anthropic
+  # connection, no model download. Tests activate the 'test' profile.
+  ai:
+    ollama:
+      chat:
+        enabled: false
+      embedding:
+        enabled: false
+    anthropic:
+      chat:
+        enabled: false
+  kafka:
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: order-service-it
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      auto-offset-reset: earliest
+    listener:
+      ack-mode: record

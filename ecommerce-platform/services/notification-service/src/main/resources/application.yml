@@ -1,0 +1,83 @@
+# ============================================================================
+#  notification-service — base configuration. Pure Kafka consumer.
+# ============================================================================
+spring:
+  application:
+    name: notification-service
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    # Tracing (C5): consumer observation extracts the trace context from Kafka
+    # headers so notifications correlate into the originating distributed trace.
+    # The DLT producer template is also observed. Auto-configured beans pick
+    # these up; no manual bean wiring needed.
+    template:
+      observation-enabled: true
+    # Producer config is only used by the dead-letter recoverer.
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: ${SPRING_KAFKA_CONSUMER_GROUP_ID:notification-service}
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: record
+      observation-enabled: true
+
+server:
+  port: ${SERVER_PORT:8087}
+  shutdown: graceful
+
+# Email delivery. Disabled by default → the SIMULATED (logging) sender is used.
+# Set notification.mail.enabled=true and provide spring.mail.* to send real email.
+notification:
+  mail:
+    enabled: ${NOTIFICATION_MAIL_ENABLED:false}
+    from: ${NOTIFICATION_MAIL_FROM:no-reply@ecommerce.local}
+
+auth:
+  jwt:
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION:classpath:keys/public.pem}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
+  metrics:
+    tags:
+      service: notification-service
+  tracing:
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

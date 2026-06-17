@@ -1,0 +1,8 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/cart_db
+    username: ecommerce
+    password: ecommerce
+product:
+  service:
+    url: http://localhost:8082

@@ -1,0 +1,10 @@
+# ============================================================================
+#  Namespace for the entire platform. All resources live in `ecommerce`.
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecommerce
+  labels:
+    name: ecommerce
+    app.kubernetes.io/part-of: ecommerce-platform

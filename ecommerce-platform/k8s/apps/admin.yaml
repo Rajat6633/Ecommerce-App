@@ -1,0 +1,43 @@
+# ============================================================================
+#  admin — Deployment + Service
+#  Static React SPA served by nginx on port 8080. Exposed as ClusterIP :80.
+#  Routed via the frontend-ingress (admin.ecommerce.local /).
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin
+  namespace: ecommerce
+  labels: { app: admin }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: admin } }
+  template:
+    metadata:
+      labels: { app: admin }
+    spec:
+      containers:
+        - name: admin
+          image: ecommerce/admin:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          startupProbe:
+            httpGet: { path: /health, port: 8080 }
+            failureThreshold: 10
+            periodSeconds: 3
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: admin, namespace: ecommerce, labels: { app: admin } }
+spec:
+  selector: { app: admin }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]

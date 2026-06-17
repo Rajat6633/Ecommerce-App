@@ -1,0 +1,18 @@
+# ============================================================================
+#  Grafana dashboard provider — loads JSON dashboards from disk on startup.
+#  Drop any *.json dashboard into ../dashboards (mounted at the path below).
+# ============================================================================
+apiVersion: 1
+
+providers:
+  - name: ecommerce-dashboards
+    orgId: 1
+    folder: E-Commerce
+    type: file
+    disableDeletion: false
+    editable: true
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

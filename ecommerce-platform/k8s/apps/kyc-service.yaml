@@ -1,0 +1,89 @@
+# ============================================================================
+#  kyc-service — Deployment + Service + ConfigMap. Owns kyc_db.
+#  Resource server (validates JWT with the RS256 public key; does NOT mint).
+#  Consumes user.registered; produces kyc.approved / kyc.rejected.
+#  Spring AI: Anthropic chat (claude-opus-4-8) + local Transformers (ONNX)
+#  embeddings + pgvector store on the shared Postgres.
+#
+#  OPS NOTE — embedding model: the spring-ai-transformers starter loads a local
+#  ONNX model (all-MiniLM-L6-v2, 384-dim) IN-POD. On first run it is pulled from
+#  HuggingFace unless baked into the image, so the pod needs egress network OR a
+#  pre-bundled model. This in-pod model is also why memory is set higher than the
+#  other services (see resources below).
+#
+#  OPS NOTE — anthropic-credentials secret: created out-of-band (like the
+#  jwt-keys override), NOT committed here. Create with e.g.:
+#    kubectl -n ecommerce create secret generic anthropic-credentials \
+#      --from-literal=api-key=sk-ant-...
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: kyc-service-config, namespace: ecommerce }
+data:
+  SERVER_PORT: "8088"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/kyc_db"
+  SPRING_KAFKA_CONSUMER_GROUP_ID: "kyc-service"
+  KYC_EMBEDDING_PROVIDER: "transformers"
+  KYC_VENDOR_ENABLED: "false"
+  KYC_GATING_ENABLED: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyc-service
+  namespace: ecommerce
+  labels: { app: kyc-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: kyc-service } }
+  template:
+    metadata:
+      labels: { app: kyc-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8088"
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000 }
+      containers:
+        - name: kyc-service
+          image: ecommerce/kyc-service:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8088 }]
+          envFrom:
+            - configMapRef: { name: app-common-config }
+            - configMapRef: { name: kyc-service-config }
+          env:
+            - { name: SPRING_DATASOURCE_USERNAME, valueFrom: { secretKeyRef: { name: postgres-credentials, key: POSTGRES_USER } } }
+            - { name: SPRING_DATASOURCE_PASSWORD, valueFrom: { secretKeyRef: { name: postgres-credentials, key: POSTGRES_PASSWORD } } }
+            # Anthropic API key — out-of-band secret (see header). Maps to spring.ai.anthropic.api-key.
+            - { name: ANTHROPIC_API_KEY, valueFrom: { secretKeyRef: { name: anthropic-credentials, key: api-key } } }
+          volumeMounts:
+            # Resource server: reads ONLY the public key (JWT_PUBLIC_KEY_LOCATION=file:/etc/jwt/public.pem,
+            # set in app-common-config). Mirrors product/order/cart — never reads private.pem.
+            - { name: jwt-keys, mountPath: /etc/jwt, readOnly: true }
+          startupProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8088 }
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8088 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8088 }
+            periodSeconds: 15
+          # Higher memory than the other services: the local ONNX embedding model
+          # (all-MiniLM-L6-v2) is loaded in-pod, ~256Mi above order-service.
+          resources:
+            requests: { cpu: "250m", memory: "768Mi" }
+            limits:   { cpu: "1",    memory: "1280Mi" }
+      volumes:
+        - name: jwt-keys
+          secret: { secretName: jwt-keys }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: kyc-service, namespace: ecommerce, labels: { app: kyc-service } }
+spec:
+  selector: { app: kyc-service }
+  ports: [{ name: http, port: 8088, targetPort: 8088 }]

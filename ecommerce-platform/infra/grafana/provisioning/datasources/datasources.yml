@@ -1,0 +1,62 @@
+# ============================================================================
+#  Grafana datasources — auto-provisioned on startup.
+#  Wires Prometheus + Loki + Tempo with cross-correlation:
+#    - Loki log line (traceId) ----> opens the trace in Tempo
+#    - Tempo span ----> finds related logs in Loki and RED metrics in Prometheus
+# ============================================================================
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # Turn a traceId found in a log line into a clickable link to Tempo.
+      derivedFields:
+        - name: TraceID
+          # matches structured metadata or JSON field traceId
+          matcherType: label
+          matcherRegex: traceId
+          url: "$${__value.raw}"
+          datasourceUid: tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # Span -> related logs (by traceId) in Loki
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -1h
+        spanEndTimeShift: 1h
+        filterByTraceID: true
+        tags:
+          - key: service.name
+            value: service
+      # Span -> RED metrics in Prometheus
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: -1h
+        spanEndTimeShift: 1h
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: loki

@@ -1,0 +1,76 @@
+{
+  "uid": "ecom-business-metrics",
+  "title": "E-Commerce / Business & Kafka Metrics",
+  "tags": ["ecommerce", "business", "kafka"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Orders Created (total)",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(orders_created_total)" }]
+    },
+    {
+      "type": "stat",
+      "title": "Orders Completed (total)",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(orders_completed_total)" }]
+    },
+    {
+      "type": "stat",
+      "title": "Orders Failed (total)",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(orders_failed_total)" }]
+    },
+    {
+      "type": "stat",
+      "title": "Payments Processed (total)",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(payments_processed_total)" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Order Outcomes (rate /min)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(orders_created_total[1m])",   "legendFormat": "created" },
+        { "expr": "rate(orders_completed_total[1m])", "legendFormat": "completed" },
+        { "expr": "rate(orders_failed_total[1m])",    "legendFormat": "failed" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Payments & Inventory (rate /min)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(payments_processed_total[1m])", "legendFormat": "payments ok" },
+        { "expr": "rate(payment_failures_total[1m])",   "legendFormat": "payment failures" },
+        { "expr": "rate(inventory_reserved_total[1m])", "legendFormat": "inventory reserved" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka Consumer Lag (records)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Micrometer kafka.consumer.fetch.manager.records.lag (spring.kafka.* binder).",
+      "targets": [
+        {
+          "expr": "sum by (client_id, topic) (kafka_consumer_fetch_manager_records_lag)",
+          "legendFormat": "{{client_id}} / {{topic}}"
+        }
+      ]
+    }
+  ]
+}

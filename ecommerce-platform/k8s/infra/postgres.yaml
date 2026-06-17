@@ -1,0 +1,88 @@
+# ============================================================================
+#  PostgreSQL — StatefulSet with PVC. One instance, one DB per service
+#  (created by the init script ConfigMap on first boot).
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: ecommerce
+data:
+  POSTGRES_MULTIPLE_DATABASES: "auth_db,product_db,inventory_db,cart_db,order_db,payment_db,notification_db,kyc_db"
+  init-multiple-dbs.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    create_database() {
+      local db="$1"
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-EOSQL
+        SELECT 'CREATE DATABASE "$db"'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$db')\gexec
+        GRANT ALL PRIVILEGES ON DATABASE "$db" TO "$POSTGRES_USER";
+    EOSQL
+    }
+    IFS=',' read -ra DBS <<< "$POSTGRES_MULTIPLE_DATABASES"
+    for db in "${DBS[@]}"; do create_database "$(echo "$db" | xargs)"; done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ecommerce
+  labels: { app: postgres }
+spec:
+  clusterIP: None          # headless -> stable DNS postgres-0.postgres
+  selector: { app: postgres }
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: ecommerce
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports: [{ containerPort: 5432 }]
+          envFrom:
+            - secretRef: { name: postgres-credentials }
+            - configMapRef: { name: postgres-init }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "1",    memory: "1Gi" }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER"] }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER"] }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+            items:
+              - key: init-multiple-dbs.sh
+                path: init-multiple-dbs.sh
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 2Gi } }

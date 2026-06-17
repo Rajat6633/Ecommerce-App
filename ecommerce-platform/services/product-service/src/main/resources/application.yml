@@ -1,0 +1,106 @@
+# ============================================================================
+#  product-service — base configuration.
+# ============================================================================
+spring:
+  application:
+    name: product-service
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+  cache:
+    type: ${SPRING_CACHE_TYPE:simple}      # 'redis' in docker/k8s, 'simple' locally/test
+  # Spring AI — semantic search (D1) + recommendations (D5). EMBEDDINGS ONLY:
+  # the only embedding starter on the classpath is Transformers (local ONNX), so
+  # there is no external embeddings API, no API key, and no chat model. Profile
+  # gating (AiConfig / VectorStoreConfig):
+  #   test / local -> StubEmbeddingModel + in-memory SimpleVectorStore (fully offline)
+  #   docker / k8s -> Transformers (all-MiniLM-L6-v2, 384-dim) + pgvector on product_db
+  ai:
+    embedding:
+      transformers:
+        # local ONNX embeddings (downloaded once, then cached) under docker/k8s
+        cache:
+          enabled: true
+    vectorstore:
+      pgvector:
+        initialize-schema: false   # Flyway owns the schema (V2__product_vector_store.sql)
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        dimensions: 384
+
+server:
+  port: ${SERVER_PORT:8082}
+  shutdown: graceful
+
+# Embedding-model calls (D1/D5 + indexing) are Resilience4j-wrapped and fail-soft,
+# mirroring the kyc-service AI adapter.
+resilience4j:
+  circuitbreaker:
+    instances:
+      product-ai:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 15s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        ignore-exceptions:
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+  retry:
+    instances:
+      product-ai:
+        max-attempts: 2
+        wait-duration: 300ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+  ratelimiter:
+    instances:
+      product-ai:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 0
+        register-health-indicator: true
+  bulkhead:
+    instances:
+      product-ai:
+        max-concurrent-calls: 16
+        max-wait-duration: 0
+
+# Public key used to validate RS256 tokens minted by auth-service.
+auth:
+  jwt:
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION:classpath:keys/public.pem}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
+  metrics:
+    tags:
+      service: product-service
+  tracing:
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

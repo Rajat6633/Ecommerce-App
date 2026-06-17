@@ -1,0 +1,102 @@
+# ============================================================================
+#  Grafana — datasources (Prom+Loki+Tempo, cross-correlated) auto-provisioned.
+#  Dashboards from Phase 2 can be mounted via an additional ConfigMap.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: ecommerce
+data:
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          exemplarTraceIdDestinations:
+            - { name: traceID, datasourceUid: tempo }
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        jsonData:
+          derivedFields:
+            - { name: TraceID, matcherType: label, matcherRegex: traceId, url: "${__value.raw}", datasourceUid: tempo }
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            filterByTraceID: true
+            tags: [{ key: service.name, value: service }]
+          tracesToMetrics: { datasourceUid: prometheus }
+          serviceMap: { datasourceUid: prometheus }
+          nodeGraph: { enabled: true }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: ecommerce
+data:
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+      - name: ecommerce
+        orgId: 1
+        folder: E-Commerce
+        type: file
+        options: { path: /var/lib/grafana/dashboards }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: grafana, namespace: ecommerce }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: grafana } }
+  template:
+    metadata: { labels: { app: grafana } }
+    spec:
+      securityContext: { fsGroup: 472, runAsUser: 472, runAsNonRoot: true }
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.1.0
+          ports: [{ containerPort: 3000 }]
+          envFrom:
+            - secretRef: { name: grafana-credentials }
+          env:
+            - { name: GF_USERS_ALLOW_SIGN_UP, value: "false" }
+          volumeMounts:
+            - { name: datasources, mountPath: /etc/grafana/provisioning/datasources }
+            - { name: dashprovider, mountPath: /etc/grafana/provisioning/dashboards }
+            - { name: storage,     mountPath: /var/lib/grafana }
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            initialDelaySeconds: 15
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: datasources
+          configMap: { name: grafana-datasources }
+        - name: dashprovider
+          configMap: { name: grafana-dashboard-provider }
+        - name: storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata: { name: grafana, namespace: ecommerce, labels: { app: grafana } }
+spec:
+  selector: { app: grafana }
+  ports: [{ name: http, port: 3000, targetPort: 3000 }]

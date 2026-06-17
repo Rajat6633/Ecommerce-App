@@ -1,0 +1,62 @@
+# ============================================================================
+#  notification-service — Deployment + Service + ConfigMap. Owns notification_db.
+#  Pure Kafka consumer (order.confirmed, payment.completed); sends email.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: notification-service-config, namespace: ecommerce }
+data:
+  SERVER_PORT: "8087"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/notification_db"
+  SPRING_KAFKA_CONSUMER_GROUP_ID: "notification-service"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: ecommerce
+  labels: { app: notification-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: notification-service } }
+  template:
+    metadata:
+      labels: { app: notification-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8087"
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000 }
+      containers:
+        - name: notification-service
+          image: ecommerce/notification-service:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8087 }]
+          envFrom:
+            - configMapRef: { name: app-common-config }
+            - configMapRef: { name: notification-service-config }
+            - secretRef: { name: smtp-credentials }
+          env:
+            - { name: SPRING_DATASOURCE_USERNAME, valueFrom: { secretKeyRef: { name: postgres-credentials, key: POSTGRES_USER } } }
+            - { name: SPRING_DATASOURCE_PASSWORD, valueFrom: { secretKeyRef: { name: postgres-credentials, key: POSTGRES_PASSWORD } } }
+          startupProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8087 }
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8087 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8087 }
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "150m", memory: "320Mi" }
+            limits:   { cpu: "500m", memory: "640Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: notification-service, namespace: ecommerce, labels: { app: notification-service } }
+spec:
+  selector: { app: notification-service }
+  ports: [{ name: http, port: 8087, targetPort: 8087 }]

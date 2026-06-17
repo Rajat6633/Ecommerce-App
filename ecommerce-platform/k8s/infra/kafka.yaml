@@ -1,0 +1,156 @@
+# ============================================================================
+#  Zookeeper + Kafka (single broker, Minikube-sized) + topic bootstrap Job.
+#  Kafka is reachable cluster-wide at kafka:9092 via Kubernetes DNS.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: ecommerce
+  labels: { app: zookeeper }
+spec:
+  clusterIP: None
+  selector: { app: zookeeper }
+  ports: [{ name: client, port: 2181 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: ecommerce
+spec:
+  serviceName: zookeeper
+  replicas: 1
+  selector: { matchLabels: { app: zookeeper } }
+  template:
+    metadata: { labels: { app: zookeeper } }
+    spec:
+      containers:
+        - name: zookeeper
+          image: confluentinc/cp-zookeeper:7.6.1
+          ports: [{ containerPort: 2181 }]
+          env:
+            - { name: ZOOKEEPER_CLIENT_PORT, value: "2181" }
+            - { name: ZOOKEEPER_TICK_TIME,   value: "2000" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/zookeeper/data }
+            - { name: log,  mountPath: /var/lib/zookeeper/log }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          readinessProbe:
+            tcpSocket: { port: 2181 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 2181 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: 1Gi } } }
+    - metadata: { name: log }
+      spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: 1Gi } } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: ecommerce
+  labels: { app: kafka }
+spec:
+  clusterIP: None
+  selector: { app: kafka }
+  ports: [{ name: broker, port: 9092 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: ecommerce
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector: { matchLabels: { app: kafka } }
+  template:
+    metadata: { labels: { app: kafka } }
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.1
+          ports: [{ containerPort: 9092 }]
+          env:
+            - { name: KAFKA_BROKER_ID, value: "1" }
+            - { name: KAFKA_ZOOKEEPER_CONNECT, value: "zookeeper:2181" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://0.0.0.0:9092" }
+            # Advertise the headless pod DNS so in-cluster clients connect back correctly.
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "false" }
+            - { name: KAFKA_NUM_PARTITIONS, value: "6" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "1Gi" }
+          readinessProbe:
+            tcpSocket: { port: 9092 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 9092 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: 2Gi } } }
+---
+# One-shot topic creation (idempotent). Re-runnable via `kubectl delete job`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topic-init
+  namespace: ecommerce
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: topic-init
+          image: confluentinc/cp-kafka:7.6.1
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              until kafka-broker-api-versions --bootstrap-server kafka:9092 >/dev/null 2>&1; do
+                echo "waiting for kafka..."; sleep 5; done
+              create() { kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+                --topic "$1" --partitions "${2:-6}" --replication-factor 1; }
+              create order.created
+              create inventory.reserved
+              create inventory.reservation-failed
+              create inventory.released
+              create payment.completed
+              create payment.failed
+              create order.confirmed
+              # KYC / compliance saga (Phase 14): user.registered emitted by
+              # auth-service; kyc.approved / kyc.rejected by kyc-service.
+              create user.registered
+              create kyc.approved
+              create kyc.rejected
+              create order.created.DLT 1
+              create inventory.reserved.DLT 1
+              create inventory.reservation-failed.DLT 1
+              create inventory.released.DLT 1
+              create payment.completed.DLT 1
+              create payment.failed.DLT 1
+              create order.confirmed.DLT 1
+              create user.registered.DLT 1
+              create kyc.approved.DLT 1
+              create kyc.rejected.DLT 1
+              kafka-topics --bootstrap-server kafka:9092 --list

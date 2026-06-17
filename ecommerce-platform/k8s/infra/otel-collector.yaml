@@ -1,0 +1,101 @@
+# ============================================================================
+#  OpenTelemetry Collector — OTLP ingest -> Tempo (traces) + Prometheus (RED).
+#  Services send to: http://otel-collector.ecommerce.svc.cluster.local:4318
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: ecommerce
+data:
+  otel-collector-config.yml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+          http: { endpoint: 0.0.0.0:4318 }
+    processors:
+      batch: { timeout: 2s, send_batch_size: 1024 }
+      memory_limiter: { check_interval: 5s, limit_percentage: 80, spike_limit_percentage: 20 }
+      resource:
+        attributes:
+          - { key: deployment.environment, value: minikube, action: upsert }
+    connectors:
+      spanmetrics:
+        namespace: traces.spanmetrics
+        histogram:
+          explicit: { buckets: [5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s,2s,5s] }
+        dimensions:
+          - { name: http.method }
+          - { name: http.route }
+          - { name: http.status_code }
+    exporters:
+      otlp/tempo:
+        endpoint: tempo:4317
+        tls: { insecure: true }
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        enable_open_metrics: true
+        resource_to_telemetry_conversion: { enabled: true }
+    extensions:
+      health_check: { endpoint: 0.0.0.0:13133 }
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlp/tempo, spanmetrics]
+        metrics:
+          receivers: [spanmetrics]
+          processors: [memory_limiter, batch]
+          exporters: [prometheus]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: ecommerce
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: otel-collector } }
+  template:
+    metadata:
+      labels: { app: otel-collector }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8889"
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.103.1
+          args: ["--config=/etc/otel/otel-collector-config.yml"]
+          ports:
+            - { containerPort: 4317, name: otlp-grpc }
+            - { containerPort: 4318, name: otlp-http }
+            - { containerPort: 8889, name: prom }
+            - { containerPort: 13133, name: health }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otel }
+          livenessProbe:
+            httpGet: { path: /, port: 13133 }
+            initialDelaySeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: config
+          configMap: { name: otel-collector-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: ecommerce
+  labels: { app: otel-collector }
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+    - { name: prom,      port: 8889, targetPort: 8889 }

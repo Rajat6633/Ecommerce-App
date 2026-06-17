@@ -1,0 +1,28 @@
+# Cloud profile (optional): support chatbot (D4) chat = Anthropic Claude (needs
+# ANTHROPIC_API_KEY). Retained behind its own profile so the default
+# local/docker/k8s runs use local Ollama instead. Infra endpoints come from the
+# environment.
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/order_db}
+    username: ${POSTGRES_USER:ecommerce}
+    password: ${POSTGRES_PASSWORD:ecommerce}
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:29092}
+  ai:
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      chat:
+        enabled: true        # Anthropic is the single active ChatModel under 'cloud'
+        options:
+          model: ${ORDER_ANTHROPIC_CHAT_MODEL:claude-opus-4-8}
+    ollama:
+      chat:
+        enabled: false       # keep Ollama off so only ONE ChatModel exists
+cart:
+  service:
+    url: ${CART_SERVICE_URL:http://cart-service:8084}
+management:
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://otel-collector:4318/v1/traces}

@@ -1,0 +1,22 @@
+# Local profile: localhost infra. Support chatbot (D4) chat = local Ollama
+# (llama3.2:3b) on http://localhost:11434 — no ANTHROPIC_API_KEY required.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/order_db
+    username: ecommerce
+    password: ecommerce
+  kafka:
+    bootstrap-servers: localhost:9092
+  ai:
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        enabled: true        # Ollama is the single active ChatModel under 'local'
+        options:
+          model: ${ORDER_CHAT_MODEL:llama3.2:3b}
+    anthropic:
+      chat:
+        enabled: false       # keep Anthropic off so only ONE ChatModel exists
+cart:
+  service:
+    url: http://localhost:8084

@@ -1,0 +1,105 @@
+# ============================================================================
+#  cart-service — base configuration.
+# ============================================================================
+spring:
+  application:
+    name: cart-service
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+  cloud:
+    openfeign:
+      client:
+        config:
+          product-service:
+            connect-timeout: 2000
+            read-timeout: 3000
+
+server:
+  port: ${SERVER_PORT:8084}
+  shutdown: graceful
+
+# Downstream product-service (Kubernetes DNS in cluster)
+product:
+  service:
+    url: ${PRODUCT_SERVICE_URL:http://localhost:8082}
+
+auth:
+  jwt:
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION:classpath:keys/public.pem}
+
+# ---- Resilience4j for the product-service Feign call ----
+resilience4j:
+  circuitbreaker:
+    instances:
+      product-service:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        # Local back-pressure (rate-limiter / bulkhead rejection) is not a
+        # downstream fault, so it must not count toward opening the circuit.
+        ignore-exceptions:
+          - com.ecommerce.cart.domain.exception.ProductServiceUnavailableException
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+  retry:
+    instances:
+      product-service:
+        max-attempts: 3
+        wait-duration: 300ms
+        retry-exceptions:
+          - feign.FeignException
+          - java.io.IOException
+        ignore-exceptions:
+          - feign.FeignException$NotFound
+  # Caps outbound call rate to product-service. Fail fast (timeout-duration 0)
+  # so a user request never blocks waiting for a permit.
+  ratelimiter:
+    instances:
+      product-service:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 0
+        register-health-indicator: true
+  # Caps concurrent in-flight calls so a slow product-service can't exhaust threads.
+  bulkhead:
+    instances:
+      product-service:
+        max-concurrent-calls: 25
+        max-wait-duration: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
+  metrics:
+    tags:
+      service: cart-service
+  tracing:
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

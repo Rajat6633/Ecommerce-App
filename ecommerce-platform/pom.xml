@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Inherit Spring Boot's dependency + plugin management -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.4</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.ecommerce</groupId>
+    <artifactId>ecommerce-platform-parent</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>ecommerce-platform-parent</name>
+    <description>Parent POM for the E-Commerce microservices platform</description>
+
+    <modules>
+        <module>shared/common-events</module>
+        <module>services/auth-service</module>
+        <module>services/product-service</module>
+        <module>services/inventory-service</module>
+        <module>services/cart-service</module>
+        <module>services/order-service</module>
+        <module>services/payment-service</module>
+        <module>services/notification-service</module>
+        <module>services/kyc-service</module>
+        <!-- No api-gateway module: the edge/API gateway is the Kubernetes NGINX
+             Ingress Controller (k8s/ingress.yaml), not a Spring service. -->
+        <!-- All 7 business services delivered (Phases 4-10); kyc-service is Phase 14. -->
+
+    </modules>
+
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Aligned with Spring Boot 3.3.x -->
+        <spring-cloud.version>2023.0.3</spring-cloud.version>
+        <springdoc.version>2.6.0</springdoc.version>
+        <logstash-logback.version>7.4</logstash-logback.version>
+        <resilience4j.version>2.2.0</resilience4j.version>
+        <!-- Spring AI milestone aligned with Spring Boot 3.3.x. 1.0.x GA / 1.1.x
+             baseline on Boot 3.4+; 1.0.0-M1 is the release documented against
+             Boot 3.3.x and still uses the *-spring-boot-starter artifact naming.
+             VERIFY FIRST: resolves only from the Spring milestone repo (offline
+             builds will fail to download it). -->
+        <spring-ai.version>1.0.0-M1</spring-ai.version>
+        <jacoco.version>0.8.12</jacoco.version>
+        <jacoco.line.coverage>0.80</jacoco.line.coverage>
+
+        <!-- OWASP Dependency-Check (SCA) — local, on-demand only (D2). Activated by
+             the `owasp` profile below; never runs on a normal build. 10.x is current
+             stable, runs on JDK 21. -->
+        <owasp-dependency-check.version>10.0.4</owasp-dependency-check.version>
+
+        <!-- Override Spring Boot 3.3.x's Testcontainers (1.19.8 / docker-java 3.3.6,
+             2023) which cannot speak to a modern Docker Engine 29 daemon over the
+             Windows named pipe (HTTP 400). 1.20.x ships docker-java 3.4.x. -->
+        <testcontainers.version>1.20.6</testcontainers.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Internal shared modules -->
+            <dependency>
+                <groupId>com.ecommerce</groupId>
+                <artifactId>common-events</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Spring AI BOM (kyc-service only; keep AI deps out of shared modules) -->
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>net.logstash.logback</groupId>
+                <artifactId>logstash-logback-encoder</artifactId>
+                <version>${logstash-logback.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.resilience4j</groupId>
+                <artifactId>resilience4j-spring-boot3</artifactId>
+                <version>${resilience4j.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <!-- Spring AI milestones (1.0.0-M1) live in the Spring milestone repo, not
+         Maven Central. Declared here so the spring-ai-bom <dependencyManagement>
+         import above resolves; only kyc-service actually pulls Spring AI deps.
+         VERIFY FIRST: requires network access to repo.spring.io — offline builds
+         will fail to download the BOM and starters. -->
+    <repositories>
+        <repository>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Code coverage with an 80% line-coverage gate -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                    <executions>
+                        <execution>
+                            <id>prepare-agent</id>
+                            <goals><goal>prepare-agent</goal></goals>
+                        </execution>
+                        <execution>
+                            <id>report</id>
+                            <phase>verify</phase>
+                            <goals><goal>report</goal></goals>
+                        </execution>
+                        <execution>
+                            <id>check-coverage</id>
+                            <phase>verify</phase>
+                            <goals><goal>check</goal></goals>
+                            <configuration>
+                                <rules>
+                                    <rule>
+                                        <element>BUNDLE</element>
+                                        <limits>
+                                            <limit>
+                                                <counter>LINE</counter>
+                                                <value>COVEREDRATIO</value>
+                                                <minimum>${jacoco.line.coverage}</minimum>
+                                            </limit>
+                                        </limits>
+                                        <excludes>
+                                            <exclude>*Application</exclude>
+                                            <exclude>*Config</exclude>
+                                            <exclude>*Properties</exclude>
+                                        </excludes>
+                                    </rule>
+                                </rules>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+                <!-- Surefire runs *Test (unit); Failsafe runs *IT (integration) -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <configuration>
+                        <!-- Pin the Docker Engine API version docker-java requests.
+                             docker-java defaults to an old version (1.32) that a modern
+                             Engine (MinAPIVersion 1.40+) rejects with HTTP 400. 1.43 is
+                             supported by Docker 24+ (local + CI). -->
+                        <systemPropertyVariables>
+                            <api.version>1.43</api.version>
+                        </systemPropertyVariables>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>integration-test</goal>
+                                <goal>verify</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
+    <!-- ====================================================================
+         D2 — OWASP Dependency-Check (SCA), opt-in / local / on-demand only.
+
+         This profile is NEVER active on a normal build. It runs ONLY when you
+         explicitly ask for it:
+
+             mvn -Powasp verify
+             mvn -Powasp org.owasp:dependency-check-maven:aggregate
+
+         FIRST RUN downloads the full NVD vulnerability database — large and slow
+         (tens of minutes) the first time. The NVD now rate-limits anonymous
+         downloads heavily; get a FREE NVD API key
+         (https://nvd.nist.gov/developers/request-an-api-key) and pass it to make
+         the download dramatically faster (and to keep the local DB fresh):
+
+             mvn -Powasp verify -DnvdApiKey=YOUR_KEY
+
+         REPORT-ONLY by default: the build does NOT fail on findings (failBuildOnCVSS
+         is set to 11, i.e. unreachable, since CVSS maxes at 10). To turn it into a
+         gate, lower the threshold on the command line, e.g.:
+
+             mvn -Powasp verify -Dformat=ALL -DfailBuildOnCVSS=7
+
+         Output (HTML + JSON) is written to the reactor root's target/ directory.
+         ==================================================================== -->
+    <profiles>
+        <profile>
+            <id>owasp</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.owasp</groupId>
+                        <artifactId>dependency-check-maven</artifactId>
+                        <version>${owasp-dependency-check.version}</version>
+                        <configuration>
+                            <!-- Emit both an HTML report (human-readable) and JSON
+                                 (machine-readable) into the root target/ dir. -->
+                            <formats>
+                                <format>HTML</format>
+                                <format>JSON</format>
+                            </formats>
+                            <!-- Report-only: 11 is unreachable (CVSS tops out at 10),
+                                 so the build never fails. Override on the CLI to gate:
+                                 -DfailBuildOnCVSS=7 -->
+                            <failBuildOnCVSS>11</failBuildOnCVSS>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <!-- `aggregate` scans every module in the reactor and
+                                     produces a single combined report. Bound to verify
+                                     so `mvn -Powasp verify` triggers it. -->
+                                <goals>
+                                    <goal>aggregate</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

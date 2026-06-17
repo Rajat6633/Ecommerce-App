@@ -1,0 +1,209 @@
+# ============================================================================
+#  order-service — base configuration.
+# ============================================================================
+spring:
+  application:
+    name: order-service
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    # Tracing (C5): producer/consumer observation injects+extracts the trace
+    # context into Kafka headers, so the saga (auth→kyc→order→...) correlates as
+    # ONE distributed trace. Auto-configured KafkaTemplate + listener container
+    # factory pick these up; no manual bean wiring needed.
+    template:
+      observation-enabled: true
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: ${SPRING_KAFKA_CONSUMER_GROUP_ID:order-service}
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: record
+      observation-enabled: true
+  cloud:
+    openfeign:
+      client:
+        config:
+          cart-service:
+            connect-timeout: 2000
+            read-timeout: 3000
+  # Spring AI chat model selection for the support chatbot (D4) — exactly ONE
+  # vendor per profile.
+  #
+  # Both the Ollama and Anthropic starters are on the classpath. Each vendor's
+  # auto-configured ChatModel is gated by spring.ai.<vendor>.chat.enabled
+  # (default true) + @ConditionalOnMissingBean. To make the active ChatModel
+  # deterministic we default BOTH chat auto-configs OFF here and re-enable
+  # exactly one per profile:
+  #   local / docker / k8s -> Ollama       (application-{local,docker,k8s}.yml)
+  #   cloud                -> Anthropic     (application-cloud.yml)
+  #   test                 -> neither; the StubChatModel (AiConfig) is the only bean.
+  # No embeddings / no pgvector — RAG context is the relational order history.
+  ai:
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        enabled: false
+        options:
+          model: ${ORDER_CHAT_MODEL:llama3.2:3b}
+      embedding:
+        enabled: false
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      chat:
+        enabled: false
+        options:
+          model: ${ORDER_ANTHROPIC_CHAT_MODEL:claude-opus-4-8}
+
+server:
+  port: ${SERVER_PORT:8085}
+  shutdown: graceful
+
+order:
+  default-currency: USD
+  kyc:
+    gating:
+      # Phase 14b turns the checkout KYC gate ON. Fail-closed: a missing or
+      # non-APPROVED local read-model status blocks placeOrder (HTTP 403).
+      # Override per profile / ConfigMap; false ⇒ observe-only (never blocks).
+      enabled: ${ORDER_KYC_GATING_ENABLED:true}
+
+cart:
+  service:
+    url: ${CART_SERVICE_URL:http://localhost:8084}
+
+auth:
+  jwt:
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION:classpath:keys/public.pem}
+    # Expected token issuer; must match what auth-service mints (auth.jwt.issuer).
+    issuer: ${JWT_ISSUER:auth-service}
+    # Expected token audience; must match what auth-service mints (auth.jwt.audience).
+    audience: ${JWT_AUDIENCE:ecommerce-services}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      cart-service:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        # Local back-pressure (rate-limiter / bulkhead rejection) is not a
+        # downstream fault, so it must not count toward opening the circuit.
+        ignore-exceptions:
+          - com.ecommerce.order.domain.exception.CartServiceUnavailableException
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+      kafka-publisher:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        ignore-exceptions:
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+      # Support chatbot LLM call (D4) — fails soft to a friendly message.
+      order-support-ai:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 15s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+        ignore-exceptions:
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+  retry:
+    instances:
+      cart-service:
+        max-attempts: 3
+        wait-duration: 300ms
+        retry-exceptions:
+          - feign.FeignException
+          - java.io.IOException
+      kafka-publisher:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+      order-support-ai:
+        max-attempts: 2
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+  # Caps outbound call rate per dependency (overridable via ConfigMap). Fail
+  # fast (timeout-duration 0) so a user request never blocks waiting for a permit.
+  ratelimiter:
+    instances:
+      cart-service:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 0
+        register-health-indicator: true
+      kafka-publisher:
+        limit-for-period: 100
+        limit-refresh-period: 1s
+        timeout-duration: 0
+      order-support-ai:
+        limit-for-period: 20
+        limit-refresh-period: 1s
+        timeout-duration: 0
+        register-health-indicator: true
+  # Caps concurrent in-flight calls so a slow dependency can't exhaust threads.
+  bulkhead:
+    instances:
+      cart-service:
+        max-concurrent-calls: 25
+        max-wait-duration: 0
+      kafka-publisher:
+        max-concurrent-calls: 20
+        max-wait-duration: 0
+      order-support-ai:
+        max-concurrent-calls: 8
+        max-wait-duration: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
+  metrics:
+    tags:
+      service: order-service
+  tracing:
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
